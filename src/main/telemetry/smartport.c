@@ -23,7 +23,7 @@
 #include "drivers/accgyro/accgyro.h"
 #include "drivers/compass/compass.h"
 #include "drivers/sensor.h"
-#include "drivers/system.h"
+#include "drivers/time.h"
 
 #include "fc/config.h"
 #include "fc/controlrate_profile.h"
@@ -321,15 +321,7 @@ void configureSmartPortTelemetryPort(void)
         return;
     }
 
-    portOptions_t portOptions = 0;
-
-    if (telemetryConfig()->halfDuplex) {
-        portOptions |= SERIAL_BIDIR;
-    }
-
-    if (telemetryConfig()->telemetry_inversion) {
-        portOptions |= SERIAL_INVERTED;
-    }
+    portOptions_t portOptions = (telemetryConfig()->halfDuplex ? SERIAL_BIDIR : SERIAL_UNIDIR) | (telemetryConfig()->telemetry_inverted ? SERIAL_NOT_INVERTED : SERIAL_INVERTED);
 
     smartPortSerialPort = openSerialPort(portConfig->identifier, FUNCTION_TELEMETRY_SMARTPORT, NULL, SMARTPORT_BAUD, SMARTPORT_UART_MODE, portOptions);
 
@@ -619,7 +611,7 @@ void handleSmartPortTelemetry(void)
             case FSSP_DATAID_VFAS       :
                 if (batteryConfig()->voltageMeterSource != VOLTAGE_METER_NONE && getBatteryCellCount() > 0) {
                     uint16_t vfasVoltage;
-                    if (telemetryConfig()->frsky_vfas_cell_voltage) {
+                    if (telemetryConfig()->report_cell_voltage) {
                         vfasVoltage = getBatteryVoltage() / getBatteryCellCount();
                     } else {
                         vfasVoltage = getBatteryVoltage();

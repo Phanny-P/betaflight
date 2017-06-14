@@ -109,11 +109,14 @@
 #include "hardware_revision.h"
 #endif
 
+#define STATIC_ASSERT(condition, name) \
+    typedef char assert_failed_ ## name [(condition) ? 1 : -1 ]
+
 static const char * const flightControllerIdentifier = BETAFLIGHT_IDENTIFIER; // 4 UPPER CASE alpha numeric characters that identify the flight controller.
 static const char * const boardIdentifier = TARGET_BOARD_IDENTIFIER;
 
 #ifndef USE_OSD_SLAVE
-static const box_t boxes[CHECKBOX_ITEM_COUNT + 1] = {
+static const box_t boxes[CHECKBOX_ITEM_COUNT] = {
     { BOXARM, "ARM", 0 },
     { BOXANGLE, "ANGLE", 1 },
     { BOXHORIZON, "HORIZON", 2 },
@@ -146,13 +149,12 @@ static const box_t boxes[CHECKBOX_ITEM_COUNT + 1] = {
     { BOX3DDISABLESWITCH, "DISABLE 3D SWITCH", 29},
     { BOXFPVANGLEMIX, "FPV ANGLE MIX", 30},
     { BOXBLACKBOXERASE, "BLACKBOX ERASE (>30s)", 31 },
-    { CHECKBOX_ITEM_COUNT, NULL, 0xFF }
 };
 
-// this is calculated at startup based on enabled features.
-static uint8_t activeBoxIds[CHECKBOX_ITEM_COUNT];
-// this is the number of filled indexes in above array
-static uint8_t activeBoxIdCount = 0;
+// mask of enabled IDs, calculated on startup based on enabled features. boxId_e is used as bit index
+static uint32_t activeBoxIds;
+// check that all boxId_e values fit
+STATIC_ASSERT(sizeof(activeBoxIds) * 8 >= CHECKBOX_ITEM_COUNT, CHECKBOX_ITEMS_wont_fit_in_activeBoxIds);
 
 static const char pidnames[] =
     "ROLL;"
@@ -254,188 +256,207 @@ static void mspRebootFn(serialPort_t *serialPort)
 }
 
 #ifndef USE_OSD_SLAVE
-const box_t *findBoxByBoxId(uint8_t boxId)
+const box_t *findBoxByBoxId(boxId_e boxId)
 {
-    for (uint8_t boxIndex = 0; boxIndex < sizeof(boxes) / sizeof(box_t); boxIndex++) {
-        const box_t *candidate = &boxes[boxIndex];
-        if (candidate->boxId == boxId) {
+    for (unsigned i = 0; i < ARRAYLEN(boxes); i++) {
+        const box_t *candidate = &boxes[i];
+        if (candidate->boxId == boxId)
             return candidate;
-        }
     }
     return NULL;
 }
 
-const box_t *findBoxByPermanentId(uint8_t permenantId)
+const box_t *findBoxByPermanentId(uint8_t permanentId)
 {
-    for (uint8_t boxIndex = 0; boxIndex < sizeof(boxes) / sizeof(box_t); boxIndex++) {
-        const box_t *candidate = &boxes[boxIndex];
-        if (candidate->permanentId == permenantId) {
+    for (unsigned i = 0; i < ARRAYLEN(boxes); i++) {
+        const box_t *candidate = &boxes[i];
+        if (candidate->permanentId == permanentId)
             return candidate;
-        }
     }
     return NULL;
 }
 
 static void serializeBoxNamesReply(sbuf_t *dst)
 {
-    for (int i = 0; i < activeBoxIdCount; i++) {
-        const int activeBoxId = activeBoxIds[i];
-        const box_t *box = findBoxByBoxId(activeBoxId);
-        if (!box) {
-            continue;
+    for (boxId_e id = 0; id < CHECKBOX_ITEM_COUNT; id++) {
+        if(activeBoxIds & (1 << id)) {
+            const box_t *box = findBoxByBoxId(id);
+            sbufWriteString(dst, box->boxName);
+            sbufWriteU8(dst, ';');
         }
+    }
+}
 
-        sbufWriteData(dst, box->boxName, strlen(box->boxName));
-        sbufWriteU8(dst, ';');
+static void serializeBoxIdsReply(sbuf_t *dst)
+{
+    for (boxId_e id = 0; id < CHECKBOX_ITEM_COUNT; id++) {
+        if(activeBoxIds & (1 << id)) {
+            const box_t *box = findBoxByBoxId(id);
+            sbufWriteU8(dst, box->permanentId);
+        }
     }
 }
 
 void initActiveBoxIds(void)
 {
-    // calculate used boxes based on features and fill availableBoxes[] array
-    memset(activeBoxIds, 0xFF, sizeof(activeBoxIds));
-
-    activeBoxIdCount = 0;
-    activeBoxIds[activeBoxIdCount++] = BOXARM;
+    // calculate used boxes based on features and set corresponding activeBoxIds bits
+    uint32_t ena = 0;  // temporary variable to collect result
+    // macro to enable boxId (BoxidMaskEnable). Reference to ena is hidden, local use only
+#define BME(boxId) do { ena |= (1 << (boxId)); } while(0)
+    BME(BOXARM);
 
     if (!feature(FEATURE_AIRMODE)) {
-        activeBoxIds[activeBoxIdCount++] = BOXAIRMODE;
+        BME(BOXAIRMODE);
     }
 
     if (!feature(FEATURE_ANTI_GRAVITY)) {
-        activeBoxIds[activeBoxIdCount++] = BOXANTIGRAVITY;
+        BME(BOXANTIGRAVITY);
     }
 
     if (sensors(SENSOR_ACC)) {
-        activeBoxIds[activeBoxIdCount++] = BOXANGLE;
-        activeBoxIds[activeBoxIdCount++] = BOXHORIZON;
-        activeBoxIds[activeBoxIdCount++] = BOXHEADFREE;
+        BME(BOXANGLE);
+        BME(BOXHORIZON);
+        BME(BOXHEADFREE);
+        BME(BOXHEADADJ);
     }
 
 #ifdef BARO
     if (sensors(SENSOR_BARO)) {
-        activeBoxIds[activeBoxIdCount++] = BOXBARO;
+        BME(BOXBARO);
     }
 #endif
 
 #ifdef MAG
     if (sensors(SENSOR_MAG)) {
-        activeBoxIds[activeBoxIdCount++] = BOXMAG;
-        activeBoxIds[activeBoxIdCount++] = BOXHEADADJ;
+        BME(BOXMAG);
     }
 #endif
 
 #ifdef GPS
     if (feature(FEATURE_GPS)) {
-        activeBoxIds[activeBoxIdCount++] = BOXGPSHOME;
-        activeBoxIds[activeBoxIdCount++] = BOXGPSHOLD;
+        BME(BOXGPSHOME);
+        BME(BOXGPSHOLD);
     }
 #endif
 
 #ifdef SONAR
     if (feature(FEATURE_SONAR)) {
-        activeBoxIds[activeBoxIdCount++] = BOXSONAR;
+        BME(BOXSONAR);
     }
 #endif
 
     if (feature(FEATURE_FAILSAFE)) {
-        activeBoxIds[activeBoxIdCount++] = BOXFAILSAFE;
+        BME(BOXFAILSAFE);
     }
 
-    if (mixerConfig()->mixerMode == MIXER_FLYING_WING || mixerConfig()->mixerMode == MIXER_AIRPLANE) {
-        activeBoxIds[activeBoxIdCount++] = BOXPASSTHRU;
+    if (mixerConfig()->mixerMode == MIXER_FLYING_WING || mixerConfig()->mixerMode == MIXER_AIRPLANE || mixerConfig()->mixerMode == MIXER_CUSTOM_AIRPLANE) {
+        BME(BOXPASSTHRU);
     }
 
-    activeBoxIds[activeBoxIdCount++] = BOXBEEPERON;
+    BME(BOXBEEPERON);
 
 #ifdef LED_STRIP
     if (feature(FEATURE_LED_STRIP)) {
-        activeBoxIds[activeBoxIdCount++] = BOXLEDLOW;
+        BME(BOXLEDLOW);
     }
 #endif
 
 #ifdef BLACKBOX
-    activeBoxIds[activeBoxIdCount++] = BOXBLACKBOX;
+    BME(BOXBLACKBOX);
 #ifdef USE_FLASHFS
-    activeBoxIds[activeBoxIdCount++] = BOXBLACKBOXERASE;
+    BME(BOXBLACKBOXERASE);
 #endif
 #endif
 
-    activeBoxIds[activeBoxIdCount++] = BOXFPVANGLEMIX;
+    BME(BOXFPVANGLEMIX);
 
     if (feature(FEATURE_3D)) {
-        activeBoxIds[activeBoxIdCount++] = BOX3DDISABLESWITCH;
+        BME(BOX3DDISABLESWITCH);
     }
 
     if (feature(FEATURE_SERVO_TILT)) {
-        activeBoxIds[activeBoxIdCount++] = BOXCAMSTAB;
+        BME(BOXCAMSTAB);
     }
 
     if (feature(FEATURE_INFLIGHT_ACC_CAL)) {
-        activeBoxIds[activeBoxIdCount++] = BOXCALIB;
+        BME(BOXCALIB);
     }
 
-    activeBoxIds[activeBoxIdCount++] = BOXOSD;
+    BME(BOXOSD);
 
 #ifdef TELEMETRY
     if (feature(FEATURE_TELEMETRY) && telemetryConfig()->telemetry_switch) {
-        activeBoxIds[activeBoxIdCount++] = BOXTELEMETRY;
+        BME(BOXTELEMETRY);
     }
 #endif
 
 #ifdef USE_SERVOS
     if (mixerConfig()->mixerMode == MIXER_CUSTOM_AIRPLANE) {
-        activeBoxIds[activeBoxIdCount++] = BOXSERVO1;
-        activeBoxIds[activeBoxIdCount++] = BOXSERVO2;
-        activeBoxIds[activeBoxIdCount++] = BOXSERVO3;
+        BME(BOXSERVO1);
+        BME(BOXSERVO2);
+        BME(BOXSERVO3);
     }
 #endif
-}
 
-#define IS_ENABLED(mask) (mask == 0 ? 0 : 1)
+#undef BME
+    // check that all enabled IDs are in boxes array (check may be skipped when using findBoxById() functions)
+    for(boxId_e boxId = 0;  boxId < CHECKBOX_ITEM_COUNT; boxId++)
+        if((ena & (1 << boxId))
+           && findBoxByBoxId(boxId) == NULL)
+            ena &= ~ (1 << boxId);             // this should not happen, but handle it gracefully
+
+    activeBoxIds = ena;                        // set global variable
+}
 
 static uint32_t packFlightModeFlags(void)
 {
     // Serialize the flags in the order we delivered them, ignoring BOXNAMES and BOXINDEXES
-    // Requires new Multiwii protocol version to fix
-    // It would be preferable to setting the enabled bits based on BOXINDEX.
-    const uint32_t tmp = IS_ENABLED(FLIGHT_MODE(ANGLE_MODE)) << BOXANGLE |
-        IS_ENABLED(FLIGHT_MODE(HORIZON_MODE)) << BOXHORIZON |
-        IS_ENABLED(FLIGHT_MODE(BARO_MODE)) << BOXBARO |
-        IS_ENABLED(FLIGHT_MODE(MAG_MODE)) << BOXMAG |
-        IS_ENABLED(FLIGHT_MODE(HEADFREE_MODE)) << BOXHEADFREE |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXHEADADJ)) << BOXHEADADJ |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXCAMSTAB)) << BOXCAMSTAB |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXCAMTRIG)) << BOXCAMTRIG |
-        IS_ENABLED(FLIGHT_MODE(GPS_HOME_MODE)) << BOXGPSHOME |
-        IS_ENABLED(FLIGHT_MODE(GPS_HOLD_MODE)) << BOXGPSHOLD |
-        IS_ENABLED(FLIGHT_MODE(PASSTHRU_MODE)) << BOXPASSTHRU |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXBEEPERON)) << BOXBEEPERON |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXLEDMAX)) << BOXLEDMAX |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXLEDLOW)) << BOXLEDLOW |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXLLIGHTS)) << BOXLLIGHTS |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXCALIB)) << BOXCALIB |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXGOV)) << BOXGOV |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXOSD)) << BOXOSD |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXTELEMETRY)) << BOXTELEMETRY |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXGTUNE)) << BOXGTUNE |
-        IS_ENABLED(FLIGHT_MODE(SONAR_MODE)) << BOXSONAR |
-        IS_ENABLED(ARMING_FLAG(ARMED)) << BOXARM |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXBLACKBOX)) << BOXBLACKBOX |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXBLACKBOXERASE)) << BOXBLACKBOXERASE |
-        IS_ENABLED(FLIGHT_MODE(FAILSAFE_MODE)) << BOXFAILSAFE |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXAIRMODE)) << BOXAIRMODE |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXANTIGRAVITY)) << BOXANTIGRAVITY |
-        IS_ENABLED(IS_RC_MODE_ACTIVE(BOXFPVANGLEMIX)) << BOXFPVANGLEMIX;
 
-    uint32_t ret = 0;
-    for (int i = 0; i < activeBoxIdCount; i++) {
-        const uint32_t flag = (tmp & (1 << activeBoxIds[i]));
-        if (flag) {
-            ret |= 1 << i;
+    uint32_t boxEnabledMask = 0;      // enabled BOXes, bits indexed by boxId_e
+
+    // enable BOXes dependent on FLIGHT_MODE, use mapping table (from runtime_config.h)
+    // flightMode_boxId_map[HORIZON_MODE] == BOXHORIZON
+    static const int8_t flightMode_boxId_map[] = FLIGHT_MODE_BOXID_MAP_INITIALIZER;
+    flightModeFlags_e flightModeCopyMask = ~0;  // only modes with bit set will be copied
+    for(unsigned i = 0; i < ARRAYLEN(flightMode_boxId_map); i++) {
+        if(flightMode_boxId_map[i] != -1        // boxId_e does exist for this FLIGHT_MODE
+           && (flightModeCopyMask & (1 << i))   // this flightmode is copy is enabled
+           && FLIGHT_MODE(1 << i)) {            // this flightmode is active
+            boxEnabledMask |= (1 << flightMode_boxId_map[i]);
         }
     }
-    return ret;
+
+    // enable BOXes dependent on rcMode bits, indexes are the same.
+    // only subset of BOXes depend on rcMode, use mask to select them
+#define BM(x) (1 << (x))
+    const uint32_t rcModeCopyMask = BM(BOXHEADADJ) | BM(BOXCAMSTAB) | BM(BOXCAMTRIG) | BM(BOXBEEPERON)
+        | BM(BOXLEDMAX) | BM(BOXLEDLOW) | BM(BOXLLIGHTS) | BM(BOXCALIB) | BM(BOXGOV) | BM(BOXOSD)
+        | BM(BOXTELEMETRY) | BM(BOXGTUNE) | BM(BOXBLACKBOX) | BM(BOXBLACKBOXERASE) | BM(BOXAIRMODE)
+        | BM(BOXANTIGRAVITY) | BM(BOXFPVANGLEMIX);
+    for(unsigned i = 0; i < sizeof(rcModeCopyMask) * 8; i++) {
+        if((rcModeCopyMask & BM(i))    // mode copy is enabled
+           && IS_RC_MODE_ACTIVE(i)) {    // mode is active
+            boxEnabledMask |= (1 << i);
+        }
+    }
+#undef BM
+    // copy ARM state
+    if(ARMING_FLAG(ARMED))
+        boxEnabledMask |= (1 << BOXARM);
+
+    // map boxId_e enabled bits to MSP status indexes
+    // only active boxIds are sent in status over MSP, other bits are not counted
+    uint32_t mspBoxEnabledMask = 0;
+    unsigned mspBoxIdx = 0;           // index of active boxId (matches sent permanentId and boxNames)
+    for (boxId_e boxId = 0; boxId < CHECKBOX_ITEM_COUNT; boxId++) {
+        if(activeBoxIds & (1 << boxId)) {
+            if (boxEnabledMask & (1 << boxId))
+                mspBoxEnabledMask |= 1 << mspBoxIdx;      // box is enabled
+            mspBoxIdx++;                                  // box is active, count it
+        }
+    }
+
+    return mspBoxEnabledMask;
 }
 
 static void serializeSDCardSummaryReply(sbuf_t *dst)
@@ -727,16 +748,31 @@ static bool mspCommonProcessOutCommand(uint8_t cmdMSP, sbuf_t *dst, mspPostProce
         sbufWriteU8(dst, batteryConfig()->currentMeterSource);
         break;
 
-    case MSP_TRANSPONDER_CONFIG:
+    case MSP_TRANSPONDER_CONFIG: {
 #ifdef TRANSPONDER
-        sbufWriteU8(dst, 1); //Transponder supported
-        for (unsigned int i = 0; i < sizeof(transponderConfig()->data); i++) {
-            sbufWriteU8(dst, transponderConfig()->data[i]);
+        // Backward compatibility to BFC 3.1.1 is lost for this message type
+        sbufWriteU8(dst, TRANSPONDER_PROVIDER_COUNT);
+        for (unsigned int i = 0; i < TRANSPONDER_PROVIDER_COUNT; i++) {
+            sbufWriteU8(dst, transponderRequirements[i].provider);
+            sbufWriteU8(dst, transponderRequirements[i].dataLength);
+        }
+
+        uint8_t provider = transponderConfig()->provider;
+        sbufWriteU8(dst, provider);
+
+        if (provider) {
+            uint8_t requirementIndex = provider - 1;
+            uint8_t providerDataLength = transponderRequirements[requirementIndex].dataLength;
+
+            for (unsigned int i = 0; i < providerDataLength; i++) {
+                sbufWriteU8(dst, transponderConfig()->data[i]);
+            }
         }
 #else
-        sbufWriteU8(dst, 0); // Transponder not supported
+        sbufWriteU8(dst, 0); // no providers
 #endif
         break;
+    }
 
     case MSP_OSD_CONFIG: {
 #define OSD_FLAGS_OSD_FEATURE           (1 << 0)
@@ -774,6 +810,9 @@ static bool mspCommonProcessOutCommand(uint8_t cmdMSP, sbuf_t *dst, mspPostProce
         sbufWriteU16(dst, osdConfig()->alt_alarm);
         for (int i = 0; i < OSD_ITEM_COUNT; i++) {
             sbufWriteU16(dst, osdConfig()->item_pos[i]);
+        }
+        for (int i = 0; i < OSD_STAT_COUNT; i++ ) {
+            sbufWriteU8(dst, osdConfig()->enabled_stats[i]);
         }
 #endif
         break;
@@ -1026,13 +1065,7 @@ static bool mspFcProcessOutCommand(uint8_t cmdMSP, sbuf_t *dst, mspPostProcessFn
         break;
 
     case MSP_BOXIDS:
-        for (int i = 0; i < activeBoxIdCount; i++) {
-            const box_t *box = findBoxByBoxId(activeBoxIds[i]);
-            if (!box) {
-                continue;
-            }
-            sbufWriteU8(dst, box->permanentId);
-        }
+        serializeBoxIdsReply(dst);
         break;
 
     case MSP_MOTOR_CONFIG:
@@ -1969,15 +2002,41 @@ static mspResult_e mspCommonProcessInCommand(uint8_t cmdMSP, sbuf_t *src)
 
     switch (cmdMSP) {
 #ifdef TRANSPONDER
-    case MSP_SET_TRANSPONDER_CONFIG:
-        if (dataSize != sizeof(transponderConfig()->data)) {
+    case MSP_SET_TRANSPONDER_CONFIG: {
+        // Backward compatibility to BFC 3.1.1 is lost for this message type
+
+        uint8_t provider = sbufReadU8(src);
+        uint8_t bytesRemaining = dataSize - 1;
+
+        if (provider > TRANSPONDER_PROVIDER_COUNT) {
             return MSP_RESULT_ERROR;
         }
-        for (unsigned int i = 0; i < sizeof(transponderConfig()->data); i++) {
+
+        const uint8_t requirementIndex = provider - 1;
+        const uint8_t transponderDataSize = transponderRequirements[requirementIndex].dataLength;
+
+        transponderConfigMutable()->provider = provider;
+
+        if (provider == TRANSPONDER_NONE) {
+            break;
+        }
+
+        if (bytesRemaining != transponderDataSize) {
+            return MSP_RESULT_ERROR;
+        }
+
+        if (provider != transponderConfig()->provider) {
+            transponderStopRepeating();
+        }
+
+        memset(transponderConfigMutable()->data, 0, sizeof(transponderConfig()->data));
+
+        for (unsigned int i = 0; i < transponderDataSize; i++) {
             transponderConfigMutable()->data[i] = sbufReadU8(src);
         }
         transponderUpdateData();
         break;
+    }
 #endif
 
     case MSP_SET_VOLTAGE_METER_CONFIG: {
@@ -2039,8 +2098,9 @@ static mspResult_e mspCommonProcessInCommand(uint8_t cmdMSP, sbuf_t *src)
     case MSP_SET_OSD_CONFIG:
         {
             const uint8_t addr = sbufReadU8(src);
-            // set all the other settings
+
             if ((int8_t)addr == -1) {
+                /* Set general OSD settings */
 #ifdef USE_MAX7456
                 vcdProfileMutable()->video_system = sbufReadU8(src);
 #else
@@ -2055,10 +2115,17 @@ static mspResult_e mspCommonProcessInCommand(uint8_t cmdMSP, sbuf_t *src)
 #endif
             } else {
 #if defined(OSD)
-                // set a position setting
-                const uint16_t pos  = sbufReadU16(src);
-                if (addr < OSD_ITEM_COUNT) {
-                    osdConfigMutable()->item_pos[addr] = pos;
+                const uint16_t value = sbufReadU16(src);
+
+                /* Get screen index, 0 is post flight statistics, 1 and above are in flight OSD screens */
+                const uint8_t screen = (sbufBytesRemaining(src) >= 1) ? sbufReadU8(src) : 1;
+
+                if (screen == 0 && addr < OSD_STAT_COUNT) {
+                    /* Set statistic item enable */
+                    osdConfigMutable()->enabled_stats[addr] = value;
+                } else if (addr < OSD_ITEM_COUNT) {
+                    /* Set element positions */
+                    osdConfigMutable()->item_pos[addr] = value;
                 }
 #else
                 return MSP_RESULT_ERROR;

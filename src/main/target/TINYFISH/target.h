@@ -23,14 +23,15 @@
 
 
 #define LED0                    PC14
-#define LED1                    PC15
+#define LED1                    PA13
 
-#define BEEPER                  PB2
+#define BEEPER                  PC15
+#define BEEPER_INVERTED
+
 
 #define USE_EXTI
 #define MPU_INT_EXTI PC13
 #define USE_MPU_DATA_READY_SIGNAL
-#define EXTI15_10_CALLBACK_HANDLER_COUNT 1 // MPU_INT
 
 #define MPU6000_SPI_INSTANCE    SPI1
 #define MPU6000_CS_PIN          PA4

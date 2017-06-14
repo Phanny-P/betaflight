@@ -30,18 +30,18 @@
 
 #include "fc/config.h"
 
+#include "drivers/time.h"
 #include "drivers/system.h"
 #include "drivers/serial.h"
+#include "drivers/serial_uart.h"
 #if defined(USE_SOFTSERIAL1) || defined(USE_SOFTSERIAL2)
 #include "drivers/serial_softserial.h"
 #endif
 
-#define USE_UART (defined(USE_UART1) || defined(USE_UART2) || defined(USE_UART3) || defined(USE_UART4) || defined(USE_UART5) || defined(USE_UART6) || defined(USE_UART7) || defined(USE_UART8))
+#define USE_SERIAL (defined(USE_UART) || defined(USE_SOFTSERIAL1) || defined(USE_SOFTSERIAL2))
 
-#define USE_SERIAL (USE_UART || defined(USE_SOFTSERIAL1) || defined(USE_SOFTSERIAL2))
-
-#if USE_UART
-#include "drivers/serial_uart.h"
+#ifdef SITL
+#include "drivers/serial_tcp.h"
 #endif
 
 #include "drivers/light_led.h"
@@ -379,7 +379,12 @@ serialPort_t *openSerialPort(
 #ifdef USE_UART8
         case SERIAL_PORT_USART8:
 #endif
+#ifdef SITL
+            // SITL emulates serial ports over TCP
+            serialPort = serTcpOpen(SERIAL_PORT_IDENTIFIER_TO_UARTDEV(identifier), rxCallback, baudRate, mode, options);
+#else
             serialPort = uartOpen(SERIAL_PORT_IDENTIFIER_TO_UARTDEV(identifier), rxCallback, baudRate, mode, options);
+#endif
             break;
 #endif
 
